@@ -25,8 +25,13 @@ final String flutterRoot = path.dirname(path.dirname(path.dirname(path.fromUri(P
 final String flutter = path.join(flutterRoot, 'bin', Platform.isWindows ? 'flutter.bat' : 'flutter');
 final String flutterPackages = path.join(flutterRoot, 'packages');
 final String flutterExamples = path.join(flutterRoot, 'examples');
-final String dart = path.join(flutterRoot, 'bin', 'cache', 'dart-sdk', 'bin', Platform.isWindows ? 'dart.exe' : 'dart');
-final String pub = path.join(flutterRoot, 'bin', 'cache', 'dart-sdk', 'bin', Platform.isWindows ? 'pub.bat' : 'pub');
+
+/// The path to the `dart` executable; set at the top of `main`
+late final String dart;
+
+/// The path to the `pub` executable; set at the top of `main`
+late final String pub;
+
 final String pubCache = path.join(flutterRoot, '.pub-cache');
 
 /// When you call this, you can pass additional arguments to pass custom
@@ -36,6 +41,12 @@ final String pubCache = path.join(flutterRoot, '.pub-cache');
 /// For example:
 /// bin/cache/dart-sdk/bin/dart dev/bots/analyze.dart --dart-sdk=/tmp/dart-sdk
 Future<void> main(List<String> arguments) async {
+  final String dartSdk = path.join(
+    Directory.current.absolute.path,
+    _getDartSdkFromArguments(arguments) ?? path.join(flutterRoot, 'bin', 'cache', 'dart-sdk'),
+  );
+  dart = path.join(dartSdk, 'bin', Platform.isWindows ? 'dart.exe' : 'dart');
+  pub = path.join(dartSdk, 'bin', Platform.isWindows ? 'pub.bat' : 'pub');
   print('$clock STARTING ANALYSIS');
   try {
     await run(arguments);
@@ -43,6 +54,31 @@ Future<void> main(List<String> arguments) async {
     error.apply();
   }
   print('$clock ${bold}Analysis successful.$reset');
+}
+
+/// Scans [arguments] for an argument of the form `--dart-sdk` or
+/// `--dart-sdk=...` and returns the configured SDK, if any.
+String? _getDartSdkFromArguments(List<String> arguments) {
+  String? result;
+  for (int i = 0; i < arguments.length; i += 1) {
+    if (arguments[i] == '--dart-sdk') {
+      if (result != null) {
+        exitWithError(<String>['The --dart-sdk argument must not be used more than once.']);
+      }
+      if (i + 1 < arguments.length) {
+        result = arguments[i + 1];
+      } else {
+        exitWithError(<String>['--dart-sdk must be followed by a path.']);
+      }
+    }
+    if (arguments[i].startsWith('--dart-sdk=')) {
+      if (result != null) {
+        exitWithError(<String>['The --dart-sdk argument must not be used more than once.']);
+      }
+      result = arguments[i].substring('--dart-sdk='.length);
+    }
+  }
+  return result;
 }
 
 Future<void> run(List<String> arguments) async {
@@ -163,8 +199,8 @@ Future<void> run(List<String> arguments) async {
 
 Future<void> verifyNoSyncAsyncStar(String workingDirectory, {int minimumMatches = 2000 }) async {
   final RegExp syncPattern = RegExp(r'\s*?a?sync\*\s*?{');
-  const String ignorePattern = 'no_sync_async_star';
-  final RegExp commentPattern = RegExp(r'^\s*?///?');
+  final RegExp ignorePattern = RegExp(r'^\s*?// The following uses a?sync\* because:? ');
+  final RegExp commentPattern = RegExp(r'^\s*?//');
   final List<String> errors = <String>[];
   await for (final File file in _allFiles(workingDirectory, 'dart', minimumMatches: minimumMatches)) {
     if (file.path.contains('test')) {
@@ -176,8 +212,19 @@ Future<void> verifyNoSyncAsyncStar(String workingDirectory, {int minimumMatches 
       if (line.startsWith(commentPattern)) {
         continue;
       }
-      if (line.contains(syncPattern) && !line.contains(ignorePattern) && (index == 0 || !lines[index - 1].contains(ignorePattern))) {
-        errors.add('${file.path}:$index: sync*/async* without an ignore (no_sync_async_star).');
+      if (line.contains(syncPattern)) {
+        int lookBehindIndex = index - 1;
+        bool hasExplanation = false;
+        while (lookBehindIndex >= 0 && lines[lookBehindIndex].startsWith(commentPattern)) {
+          if (lines[lookBehindIndex].startsWith(ignorePattern)) {
+            hasExplanation = true;
+            break;
+          }
+          lookBehindIndex -= 1;
+        }
+        if (!hasExplanation) {
+          errors.add('${file.path}:$index: sync*/async* without an explanation.');
+        }
       }
     }
   }
@@ -359,42 +406,62 @@ String _generateLicense(String prefix) {
 
 Future<void> verifyNoMissingLicense(String workingDirectory, { bool checkMinimums = true }) async {
   final int? overrideMinimumMatches = checkMinimums ? null : 0;
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'dart', overrideMinimumMatches ?? 2000, _generateLicense('// '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'java', overrideMinimumMatches ?? 39, _generateLicense('// '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'h', overrideMinimumMatches ?? 30, _generateLicense('// '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'm', overrideMinimumMatches ?? 30, _generateLicense('// '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'swift', overrideMinimumMatches ?? 10, _generateLicense('// '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'gradle', overrideMinimumMatches ?? 80, _generateLicense('// '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'gn', overrideMinimumMatches ?? 0, _generateLicense('# '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'sh', overrideMinimumMatches ?? 1, '#!/usr/bin/env bash\n${_generateLicense('# ')}');
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'bat', overrideMinimumMatches ?? 1, '@ECHO off\n${_generateLicense('REM ')}');
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'ps1', overrideMinimumMatches ?? 1, _generateLicense('# '));
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'html', overrideMinimumMatches ?? 1, '<!DOCTYPE HTML>\n<!-- ${_generateLicense('')} -->', trailingBlank: false);
-  await _verifyNoMissingLicenseForExtension(workingDirectory, 'xml', overrideMinimumMatches ?? 1, '<!-- ${_generateLicense('')} -->');
+  int failed = 0;
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'dart', overrideMinimumMatches ?? 2000, _generateLicense('// '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'java', overrideMinimumMatches ?? 39, _generateLicense('// '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'h', overrideMinimumMatches ?? 30, _generateLicense('// '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'm', overrideMinimumMatches ?? 30, _generateLicense('// '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'swift', overrideMinimumMatches ?? 10, _generateLicense('// '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'gradle', overrideMinimumMatches ?? 80, _generateLicense('// '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'gn', overrideMinimumMatches ?? 0, _generateLicense('# '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'sh', overrideMinimumMatches ?? 1, _generateLicense('# '), header: r'#!/usr/bin/env bash\n',);
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'bat', overrideMinimumMatches ?? 1, _generateLicense('REM '), header: r'@ECHO off\n');
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'ps1', overrideMinimumMatches ?? 1, _generateLicense('# '));
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'html', overrideMinimumMatches ?? 1, '<!-- ${_generateLicense('')} -->', trailingBlank: false, header: r'<!DOCTYPE HTML>\n');
+  failed += await _verifyNoMissingLicenseForExtension(workingDirectory, 'xml', overrideMinimumMatches ?? 1, '<!-- ${_generateLicense('')} -->', header: r'(<\?xml version="1.0" encoding="utf-8"\?>\n)?');
+  if (failed > 0) {
+    exitWithError(<String>['License check failed.']);
+  }
 }
 
-Future<void> _verifyNoMissingLicenseForExtension(String workingDirectory, String extension, int minimumMatches, String license, { bool trailingBlank = true }) async {
+Future<int> _verifyNoMissingLicenseForExtension(
+  String workingDirectory,
+  String extension,
+  int minimumMatches,
+  String license, {
+  bool trailingBlank = true,
+  // The "header" is a regular expression matching the header that comes before
+  // the license in some files.
+  String header = '',
+}) async {
   assert(!license.endsWith('\n'));
-  final String licensePattern = '$license\n${trailingBlank ? '\n' : ''}';
+  final String licensePattern = RegExp.escape('$license\n${trailingBlank ? '\n' : ''}');
   final List<String> errors = <String>[];
   await for (final File file in _allFiles(workingDirectory, extension, minimumMatches: minimumMatches)) {
     final String contents = file.readAsStringSync().replaceAll('\r\n', '\n');
     if (contents.isEmpty)
       continue; // let's not go down the /bin/true rabbit hole
-    if (!contents.startsWith(licensePattern))
+    if (!contents.startsWith(RegExp(header + licensePattern)))
       errors.add(file.path);
   }
   // Fail if any errors
   if (errors.isNotEmpty) {
-    final String s = errors.length == 1 ? ' does' : 's do';
-    exitWithError(<String>[
-      '${bold}The following ${errors.length} file$s not have the right license header:$reset',
-      ...errors,
+    final String redLine = '$red━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$reset';
+    final String fileDoes = errors.length == 1 ? 'file does' : '${errors.length} files do';
+    print(<String>[
+      redLine,
+      '${bold}The following $fileDoes not have the right license header for $extension files:$reset',
+      ...errors.map<String>((String error) => '  $error'),
       'The expected license header is:',
+      if (header.isNotEmpty) 'A header matching the regular expression "$header",',
+      if (header.isNotEmpty) 'followed by the following license text:',
       license,
       if (trailingBlank) '...followed by a blank line.',
-    ]);
+      redLine,
+    ].join('\n'));
+    return 1;
   }
+  return 0;
 }
 
 class _TestSkip {
